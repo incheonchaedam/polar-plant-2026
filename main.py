@@ -2,52 +2,85 @@ import io
 import os
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import matplotlib
+matplotlib.use("Agg")          # headless 서버 대응
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+import warnings
+warnings.filterwarnings("ignore")
 import streamlit as st
 
 
 # ============================================================
-# 0. Streamlit 기본 설정
+# 0. 한글 폰트 설정 (Streamlit Cloud · 로컬 모두 대응)
 # ============================================================
-st.set_page_config(page_title="극지식물 생육 분석", page_icon="🌱", layout="wide")
+def setup_korean_font():
+    if st.session_state.get("font_setup_done", False):
+        return
+    candidates = [
+        "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf",
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+        "/usr/share/fonts/truetype/nanum/NanumGothicCoding.ttf",
+        "/usr/share/fonts/truetype/nfk/NFHanaSorizAE.ttf",
+        "/usr/share/fonts/truetype/nfk/NFHanaMiso.ttf",
+    ]
+    fp = None
+    for path in candidates:
+        if os.path.exists(path):
+            fp = fm.FontProperties(fname=path)
+            plt.rcParams["font.family"] = fp.get_name()
+            break
+    if fp is None:
+        for f in fm.fontManager.ttflist:
+            name = f.name
+            if any(k in name for k in ("Nanum", "Noto Sans CJK", "Apple SD Gothic",
+                                        "KoPub", "UnBatang", "Baekmuk")):
+                plt.rcParams["font.family"] = name
+                fp = f
+                break
+    if fp is None:
+        plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["axes.unicode_minus"] = False
+    st.session_state["font_setup_done"] = True
+
+
+setup_korean_font()
 
 
 # ============================================================
-# 1. 한글 폰트 CSS
+# 1. 통계 용어 설명 (고등학생용)
 # ============================================================
-st.markdown(
-    """
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR&display=swap');
-html, body, [class*="css"] {
-    font-family: 'Noto Sans KR', 'Malgun Gothic', sans-serif;
+TERM_NOTE = {
+    "평균": "모든 값을 더해 개체로 나눈 대표값.",
+    "표준편차": "값들이 평균에서 얼마나 떨어져 있는지. 작을수록 평균 근처에 몰려 있고 클수록 넓게 퍼짐.",
+    "변동계수(CV)": "표준편차 ÷ 평균. 단위가 다른 데이터끼리 상대적 산포를 비교할 때 씀.",
+    "중앙값": "데이터를 크기순으로 나열했을 때 정가운데 값. 극단값의 영향을 덜 받음.",
+    "상관관계": "두 변수가 함께 움직이는 정도. -1 ~ 1 사이이고 1에 가까울수록 함께 증가, -1에 가까울수록 반대 방향.",
+    "상관계수 r": "상관관계를 숫자로 나타낸 것. -1 ≤ r ≤ 1. r ≈ 0이면 관계가 거의 없음.",
+    "보 조정Interquartile": "데이터를 4등분했을 때 1사분위(Q1)·3사분위(Q3) 사이 구간. 전체 중 가운데 50%.",
+    "아웃라이어": "다른 값들과 동떨어져 있는 극단값.",
+    "추세선": "산점도에서 점들의 전반적인 방향을 직선으로 근사한 선. np.polyfit으로 계산.",
+    "상관계수 ≠ 인과": "두 값이 함께 움직인다고 해서 한쪽이 원인이라고 단정할 수는 없음.",
 }
-</style>
-""",
-    unsafe_allow_html=True,
-)
 
 
 # ============================================================
-# 2. CSV 업로드 / 인코딩 처리
+# 2. CSV 읽기 (utf-8-sig → cp949 → euc-kr)
 # ============================================================
 def read_csv_file(file):
-    """file.getvalue()로 바이트를 꺼내 utf-8-sig → cp949 순서로 읽기"""
     if file is None:
         return pd.DataFrame()
     data = file.getvalue()
     for enc in ("utf-8-sig", "cp949", "euc-kr"):
         try:
-            df = pd.read_csv(io.BytesIO(data), encoding=enc)
-            return df
+            return pd.read_csv(io.BytesIO(data), encoding=enc)
         except Exception:
             pass
     return pd.DataFrame()
 
 
 # ============================================================
-# 3. 열 이름 표준화 (KeyError 방지) — 지시된 std_cols 그대로
+# 3. 열 이름 표준화 — 지시된 std_cols 그대로
 # ============================================================
 def std_cols(df):
     df = df.copy()
@@ -108,84 +141,73 @@ def std_cols(df):
 
 
 # ============================================================
-# 4. 학교명 추출 (파일명에서)
+# 4. 학교명 추출
 # ============================================================
 def extract_school_name(filename):
     if filename is None:
         return "OO고"
     name = os.path.basename(filename)
-    # 확장자 제거
     name = name.rsplit(".", 1)[0]
-    # 언더스코어 앞부분까지만
     if "_" in name:
         name = name.split("_")[0]
     return name
 
 
 # ============================================================
-# 5. CSV 다운로드 헬퍼 (utf-8-sig)
+# 5. 다운로드 버튼 (utf-8-sig)
 # ============================================================
 def make_csv_download(df, label):
-    csv_bytes = df.to_csv(index=False).encode("utf-8-sig")
     return st.download_button(
         label=f"📥 {label} 다운로드 (utf-8-sig)",
-        data=csv_bytes,
+        data=df.to_csv(index=False).encode("utf-8-sig"),
         file_name=f"{label}.csv",
         mime="text/csv",
     )
 
 
 # ============================================================
-# 6. 개체번호가 아닌 지표만 골라내는 헬퍼
+# 6. 개체번호 제외 숫자 열
 # ============================================================
 def numeric_cols_for_analysis(df):
-    """개체번호·time을 제외한 숫자 열만 반환"""
     skip = {"개체번호", "time"}
     return [c for c in df.columns if c not in skip and pd.api.types.is_numeric_dtype(df[c])]
 
 
 # ============================================================
-# 7. Numpy 추세선 계산 (px.scatter trendline 대신)
+# 7. trendline (np.polyfit)
 # ============================================================
-def add_trendline(fig, x, y, color="red", dash="dash"):
-    """go.Scatter로 추세선 추가. 값이 2개 미만이면 아무것도 안 함."""
+def add_trendline(ax, x, y, color="red", ls="--", lw=2):
     clean = pd.DataFrame({"x": x, "y": y}).dropna()
     if len(clean) < 2:
         return
     m, b = np.polyfit(clean["x"], clean["y"], 1)
-    x_seq = clean["x"].sort_values().values
-    fig.add_trace(
-        go.Scatter(
-            x=x_seq,
-            y=m * x_seq + b,
-            mode="lines",
-            line=dict(color=color, dash=dash, width=2),
-            name=f"추세선 (r)",
-            showlegend=True,
-        )
-    )
+    xs = np.sort(clean["x"].values)
+    ax.plot(xs, m * xs + b, color=color, linestyle=ls, linewidth=lw,
+            label=f"추세선 (r)")
 
 
 # ============================================================
-# 8. 상관계수 계산 헬퍼
+# 8. 상관계수
 # ============================================================
-def safe_corr(df, col1, col2):
-    clean = df[[col1, col2]].dropna()
+def safe_corr(df, c1, c2):
+    clean = df[[c1, c2]].dropna()
     if len(clean) < 2:
         return None
-    return float(clean[col1].corr(clean[col2]))
+    return float(clean[c1].corr(clean[c2]))
 
 
 # ============================================================
-# 9. 값이 충분히 남았는지 체크
+# 9. 충분한 값 여부
 # ============================================================
-def enough_vals(series):
+def enough(series):
     return series.dropna().shape[0] >= 2
 
 
 # ============================================================
-# 사이드바: 파일 업로드
+# 사이드바
 # ============================================================
+st.set_page_config(page_title="극지식물 생육 분석", page_icon="🌱", layout="wide")
+
 st.sidebar.title("📁 CSV 업로드")
 env_file = st.sidebar.file_uploader("🌡️ 환경 데이터 CSV", type="csv")
 growth_file = st.sidebar.file_uploader("🌿 생육 결과 데이터 CSV", type="csv")
@@ -193,7 +215,7 @@ growth_file = st.sidebar.file_uploader("🌿 생육 결과 데이터 CSV", type=
 school_name = extract_school_name(env_file.name if env_file else None)
 st.sidebar.success(f"학교명: {school_name} (파일명에서 자동 추출)")
 
-# 데이터 로딩 (캐시 + spinner)
+
 @st.cache_data
 def load_and_std(env_file, growth_file):
     env_df = read_csv_file(env_file)
@@ -215,21 +237,23 @@ st.sidebar.info(
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📏 생육 측정 항목 선택")
-growth_num_cols = numeric_cols_for_analysis(growth_df)
-if growth_num_cols:
+gn_cols = numeric_cols_for_analysis(growth_df)
+if gn_cols:
     selected_items = st.sidebar.multiselect(
         "비교할 측정 항목 (개체번호 제외)",
-        options=growth_num_cols,
-        default=growth_num_cols[:3] if len(growth_num_cols) >= 3 else growth_num_cols,
+        options=gn_cols,
+        default=gn_cols[:3] if len(gn_cols) >= 3 else gn_cols,
     )
 else:
     selected_items = []
     st.sidebar.warning("생육 CSV에서 숫자 열을 찾지 못했습니다.")
 
+
 # ============================================================
-# 탭 구성
+# 탭
 # ============================================================
 tab1, tab2, tab3 = st.tabs(["📖 실험 개요", "🌡️ 환경 데이터", "📊 생육 결과"])
+
 
 # ============================================================
 # TAB 1 — 실험 개요
@@ -238,104 +262,77 @@ with tab1:
     try:
         st.header("📖 실험 개요")
 
-        # 연구 배경 및 목적
         st.subheader("🔬 연구 배경 및 목적")
         st.markdown(
             f"""
 **{school_name} 극지식물 생육 차이 분석**
 
-- **배경**: 같은 환경에서 자란 극지식물이라도 개체마다 생중량·잎 수·줄기 길이 등에 차이가 있습니다.
+- **배경**: 같은 환경에서 자란 극지식물이라도 개체마다 생중량, 잎 수, 줄기 길이 등에 차이가 있습니다.
 - **목적**: 개체별 생육 데이터를 비교해 어떤 개체가 잘 자랐는지, 어떤 측정 항목이 생중량과 관련 있는지 살펴봅니다.
 - **통계 개념**:
   - **평균**: 모든 값을 더해 개수로 나눈 대표값
-  - **표준편차**: 값들이 평균에서 얼마나 흩어져 있는지 나타내는 숫자 (작을수록 평균 근처에 몰려 있음)
-  - **상관계수(r)**: 두 변수가 함께 움직이는 정도 (-1 ~ 1). 1에 가까울수록 함께 증가, -1에 가까울수록 반대 방향
+  - **표준편차**: 값들이 평균에서 얼마나 흩어져 있는지 나타내는 숫자
+  - **상관계수(r)**: 두 변수가 함께 움직이는 정도 (-1 ~ 1)
 """
         )
 
-        # 데이터 요약 표
         st.subheader("📋 데이터 요약")
-        summary_rows = []
+        rows = []
 
-        # 개체 수
         if not growth_df.empty and "개체번호" in growth_df.columns:
-            n_plants = growth_df["개체번호"].dropna().nunique()
-            summary_rows.append(
-                {"항목": "총 개체 수", "값": f"{n_plants}개체"}
-            )
+            n = growth_df["개체번호"].dropna().nunique()
+            rows.append({"항목": "총 개체 수", "값": f"{n}개체"})
         else:
-            summary_rows.append({"항목": "총 개체 수", "값": "데이터 없음"})
+            rows.append({"항목": "총 개체 수", "값": "데이터 없음"})
 
-        # 측정 기간 (환경)
-        if not env_df.empty and "time" in env_df.columns:
-            t_series = env_df["time"].dropna()
-            if enough_vals(t_series):
-                summary_rows.append(
-                    {
-                        "항목": "측정 기간",
-                        "값": f"{t_series.min().strftime('%Y-%m-%d')} ~ {t_series.max().strftime('%Y-%m-%d')}",
-                    }
-                )
-            else:
-                summary_rows.append({"항목": "측정 기간", "값": "날짜 정보 부족"})
+        if not env_df.empty and "time" in env_df.columns and enough(env_df["time"]):
+            tser = env_df["time"].dropna()
+            rows.append({
+                "항목": "측정 기간",
+                "값": f"{tser.min().strftime('%Y-%m-%d')} ~ {tser.max().strftime('%Y-%m-%d')}",
+            })
         else:
-            summary_rows.append({"항목": "측정 기간", "값": "환경 데이터 없음"})
+            rows.append({"항목": "측정 기간", "값": "환경 데이터 없음"})
 
-        # 측정 항목 (생육)
-        if growth_num_cols:
-            summary_rows.append(
-                {"항목": "생육 측정 항목", "값": ", ".join(growth_num_cols)}
-            )
+        if gn_cols:
+            rows.append({"항목": "생육 측정 항목", "값": ", ".join(gn_cols)})
         else:
-            summary_rows.append({"항목": "생육 측정 항목", "값": "없음"})
+            rows.append({"항목": "생육 측정 항목", "값": "없음"})
 
-        # 측정 항목 (환경)
-        env_num_cols = [
-            c
-            for c in ["temperature", "humidity", "ph", "ec"]
+        env_num_cols_list = [
+            c for c in ["temperature", "humidity", "ph", "ec"]
             if c in env_df.columns and pd.api.types.is_numeric_dtype(env_df[c])
         ]
-        if env_num_cols:
-            summary_rows.append(
-                {"항목": "환경 측정 항목", "값": ", ".join(env_num_cols)}
-            )
+        if env_num_cols_list:
+            rows.append({"항목": "환경 측정 항목", "값": ", ".join(env_num_cols_list)})
         else:
-            summary_rows.append({"항목": "환경 측정 항목", "값": "없음"})
+            rows.append({"항목": "환경 측정 항목", "값": "없음"})
 
-        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+        st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
-        # 주요 지표 카드 4개
         st.subheader("📊 주요 지표")
+        c1, c2, c3, c4 = st.columns(4)
 
-        col1, col2, col3, col4 = st.columns(4)
-
-        # 총 개체수
         if not growth_df.empty and "개체번호" in growth_df.columns:
-            n_plants = growth_df["개체번호"].dropna().nunique()
-            col1.metric("🌱 총 개체 수", f"{n_plants}개체")
+            n = growth_df["개체번호"].dropna().nunique()
+            c1.metric("🌱 총 개체 수", f"{n}개체")
         else:
-            col1.metric("🌱 총 개체 수", "—")
+            c1.metric("🌱 총 개체 수", "—")
 
-        # 평균 온도
-        if "temperature" in env_df.columns and enough_vals(env_df["temperature"]):
-            avg_temp = float(env_df["temperature"].dropna().mean())
-            col2.metric("🌡️ 평균 온도", f"{avg_temp:.1f}℃")
+        if "temperature" in env_df.columns and enough(env_df["temperature"]):
+            c2.metric("🌡️ 평균 온도", f"{env_df['temperature'].dropna().mean():.1f}℃")
         else:
-            col2.metric("🌡️ 평균 온도", "데이터 없음")
+            c2.metric("🌡️ 평균 온도", "데이터 없음")
 
-        # 평균 습도
-        if "humidity" in env_df.columns and enough_vals(env_df["humidity"]):
-            avg_hum = float(env_df["humidity"].dropna().mean())
-            col3.metric("💧 평균 습도", f"{avg_hum:.1f}%")
+        if "humidity" in env_df.columns and enough(env_df["humidity"]):
+            c3.metric("💧 평균 습도", f"{env_df['humidity'].dropna().mean():.1f}%")
         else:
-            col3.metric("💧 평균 습도", "데이터 없음")
+            c3.metric("💧 평균 습도", "데이터 없음")
 
-        # 평균 생중량
-        if "생중량" in growth_df.columns and enough_vals(growth_df["생중량"]):
-            avg_fw = float(growth_df["생중량"].dropna().mean())
-            col4.metric("⚖️ 평균 생중량", f"{avg_fw:.2f}g")
+        if "생중량" in growth_df.columns and enough(growth_df["생중량"]):
+            c4.metric("⚖️ 평균 생중량", f"{growth_df['생중량'].dropna().mean():.2f}g")
         else:
-            col4.metric("⚖️ 평균 생중량", "데이터 없음")
+            c4.metric("⚖️ 평균 생중량", "데이터 없음")
 
     except Exception as e:
         st.warning(f"⚠️ 이 부분은 데이터 형식 때문에 표시하지 못했어요: {e}")
@@ -351,148 +348,100 @@ with tab2:
         if env_df.empty:
             st.info("🌡️ 환경 CSV를 업로드하면 이 탭의 내용이 표시됩니다.")
         else:
-            # 환경 수치형 열 목록 (ph·ec가 없는 학교 대응)
             env_num_cols = [
-                c
-                for c in ["temperature", "humidity", "ph", "ec"]
+                c for c in ["temperature", "humidity", "ph", "ec"]
                 if c in env_df.columns and pd.api.types.is_numeric_dtype(env_df[c])
             ]
 
             if not env_num_cols:
                 st.info("🌡️ 환경 데이터에서 숫자 측정 열을 찾지 못했습니다.")
             else:
-                # 환경 요약 표
                 st.subheader("📋 환경 요약 (평균·최소·최대)")
-                env_summary_rows = []
+                summary_rows = []
                 for col in env_num_cols:
                     s = env_df[col].dropna()
                     if len(s) == 0:
                         continue
-                    env_summary_rows.append(
-                        {
-                            "측정 항목": col,
-                            "평균": f"{s.mean():.2f}",
-                            "최소": f"{s.min():.2f}",
-                            "최대": f"{s.max():.2f}",
-                            "측정 횟수": f"{len(s)}회",
-                        }
-                    )
-                st.dataframe(
-                    pd.DataFrame(env_summary_rows), use_container_width=True
-                )
+                    summary_rows.append({
+                        "측정 항목": col,
+                        "평균": f"{s.mean():.2f}",
+                        "최소": f"{s.min():.2f}",
+                        "최대": f"{s.max():.2f}",
+                        "측정 횟수": f"{len(s)}회",
+                    })
+                st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
 
-                # 날짜별 시계열 (일별 평균 꺾은선)
                 st.subheader("📈 날짜별 시계열 (일별 평균)")
 
-                if "time" in env_df.columns and enough_vals(env_df["time"]):
+                if "time" in env_df.columns and enough(env_df["time"]):
                     env_df["date"] = env_df["time"].dt.date
 
-                    # 온도 변화
+                    fig, axes = plt.subplots(2, 1, figsize=(12, 7))
+                    fig.suptitle(f"{school_name} 환경 데이터 — 일별 평균", fontsize=14)
+
                     if "temperature" in env_df.columns:
                         temp_daily = (
                             env_df.groupby("date")["temperature"]
                             .mean()
                             .reset_index()
-                            .rename(columns={"temperature": "평균 온도"})
                         )
                         temp_daily["date"] = pd.to_datetime(temp_daily["date"])
-
-                        fig_t = go.Figure()
-                        fig_t.add_trace(
-                            go.Scatter(
-                                x=temp_daily["date"],
-                                y=temp_daily["평균 온도"],
-                                mode="lines+markers",
-                                name="평균 온도",
-                                line=dict(color="red", width=2),
-                                marker=dict(size=5),
-                            )
-                        )
-                        fig_t.update_layout(
-                            title="🌡️ 일별 평균 온도",
-                            xaxis_title="날짜",
-                            yaxis_title="온도 (℃)",
-                            height=350,
-                            font=dict(family="Malgun Gothic, Apple SD Gothic Neo, sans-serif"),
-                        )
-                        st.plotly_chart(fig_t, width="stretch")
-                        plt_close_t = True
+                        ax_t = axes[0]
+                        ax_t.plot(temp_daily["date"], temp_daily["temperature"],
+                                  color="red", linewidth=1.8, marker="o", markersize=4)
+                        ax_t.axhline(temp_daily["temperature"].mean(), color="gray",
+                                     linestyle="--", linewidth=1,
+                                     label=f"평균 {temp_daily['temperature'].mean():.1f}℃")
+                        ax_t.set_ylabel("온도 (℃)", color="red")
+                        ax_t.tick_params(axis="y", labelcolor="red")
+                        ax_t.set_title("🌡️ 일별 평균 온도")
+                        ax_t.legend(loc="upper right")
+                        ax_t.grid(True, alpha=0.3)
                     else:
-                        st.info("🌡️ 온도 열이 없어 온도 그래프를 표시할 수 없습니다.")
+                        axes[0].text(0.5, 0.5, "온도 열이 없습니다", ha="center",
+                                     va="center", transform=axes[0].transAxes)
+                        axes[0].set_title("🌡️ 일별 평균 온도 (데이터 없음)")
 
-                    # 습도 변화
                     if "humidity" in env_df.columns:
                         hum_daily = (
                             env_df.groupby("date")["humidity"]
                             .mean()
                             .reset_index()
-                            .rename(columns={"humidity": "평균 습도"})
                         )
                         hum_daily["date"] = pd.to_datetime(hum_daily["date"])
-
-                        fig_h = go.Figure()
-                        fig_h.add_trace(
-                            go.Scatter(
-                                x=hum_daily["date"],
-                                y=hum_daily["평균 습도"],
-                                mode="lines+markers",
-                                name="평균 습도",
-                                line=dict(color="blue", width=2),
-                                marker=dict(size=5),
-                            )
-                        )
-                        fig_h.update_layout(
-                            title="💧 일별 평균 습도",
-                            xaxis_title="날짜",
-                            yaxis_title="습도 (%)",
-                            height=350,
-                            font=dict(family="Malgun Gothic, Apple SD Gothic Neo, sans-serif"),
-                        )
-                        st.plotly_chart(fig_h, width="stretch")
+                        ax_h = axes[1]
+                        ax_h.plot(hum_daily["date"], hum_daily["humidity"],
+                                  color="blue", linewidth=1.8, marker="o", markersize=4)
+                        ax_h.axhline(hum_daily["humidity"].mean(), color="gray",
+                                     linestyle="--", linewidth=1,
+                                     label=f"평균 {hum_daily['humidity'].mean():.1f}%")
+                        ax_h.set_ylabel("습도 (%)", color="blue")
+                        ax_h.tick_params(axis="y", labelcolor="blue")
+                        ax_h.set_title("💧 일별 평균 습도")
+                        ax_h.legend(loc="upper right")
+                        ax_h.grid(True, alpha=0.3)
+                        ax_h.set_xlabel("날짜")
                     else:
-                        st.info("💧 습도 열이 없어 습도 그래프를 표시할 수 없습니다.")
+                        axes[1].text(0.5, 0.5, "습도 열이 없습니다", ha="center",
+                                     va="center", transform=axes[1].transAxes)
+                        axes[1].set_title("💧 일별 평균 습도 (데이터 없음)")
+                        axes[1].set_xlabel("날짜")
 
-                    # pH·EC 변화 (열이 있을 때만)
-                    for col, title, color in [
-                        ("ph", "🧪 일별 평균 pH", "purple"),
-                        ("ec", "⚡ 일별 평균 EC", "orange"),
-                    ]:
-                        if col in env_df.columns:
-                            daily = (
-                                env_df.groupby("date")[col]
-                                .mean()
-                                .reset_index()
-                            )
-                            daily["date"] = pd.to_datetime(daily["date"])
+                    fig.autofmt_xdate(rotation=30)
+                    plt.tight_layout()
+                    st.pyplot(fig, use_container_width=True)
+                    plt.close(fig)
 
-                            fig_e = go.Figure()
-                            fig_e.add_trace(
-                                go.Scatter(
-                                    x=daily["date"],
-                                    y=daily[col],
-                                    mode="lines+markers",
-                                    name=title,
-                                    line=dict(color=color, width=2),
-                                    marker=dict(size=5),
-                                )
-                            )
-                            fig_e.update_layout(
-                                title=title,
-                                xaxis_title="날짜",
-                                yaxis_title=col.upper(),
-                                height=350,
-                                font=dict(
-                                    family="Malgun Gothic, Apple SD Gothic Neo, sans-serif"
-                                ),
-                            )
-                            st.plotly_chart(fig_e, width="stretch")
+                    if "ph" in env_df.columns:
+                        st.info("🧪 pH 일별 변화도 확인할 수 있습니다 (아래 원본 테이블).")
+                    if "ec" in env_df.columns:
+                        st.info("⚡ EC 일별 변화도 확인할 수 있습니다 (아래 원본 테이블).")
+
+                    with st.expander("📄 환경 데이터 원본 테이블 + 다운로드"):
+                        st.dataframe(env_df, use_container_width=True, height=280)
+                        make_csv_download(env_df, f"{school_name}_환경데이터")
                 else:
                     st.info("📅 날짜(time) 열이 없거나 유효한 날짜가 부족해 시계열을 표시할 수 없습니다.")
-
-                # 원본 테이블 + 다운로드
-                with st.expander("📄 환경 데이터 원본 테이블 보기"):
-                    st.dataframe(env_df, width="stretch", height=300)
-                    make_csv_download(env_df, f"{school_name}_환경데이터")
 
     except Exception as e:
         st.warning(f"⚠️ 이 부분은 데이터 형식 때문에 표시하지 못했어요: {e}")
@@ -508,9 +457,9 @@ with tab3:
         if growth_df.empty:
             st.info("🌿 생육 CSV를 업로드하면 이 탭의 내용이 표시됩니다.")
         else:
-            # 생중량 열이 있는지 확인
-            has_fresh = "생중량" in growth_df.columns and pd.api.types.is_numeric_dtype(
-                growth_df["생중량"]
+            has_fresh = (
+                "생중량" in growth_df.columns
+                and pd.api.types.is_numeric_dtype(growth_df["생중량"])
             )
 
             if not has_fresh:
@@ -519,229 +468,192 @@ with tab3:
                 )
             else:
                 fw = growth_df["생중량"].dropna()
+                avg_fw = float(fw.mean())
+                std_fw = float(fw.std())
+                cv_fw = float(std_fw / avg_fw) if avg_fw != 0 else 0.0
 
                 # ── 핵심 결과 카드 ──
                 st.subheader("🥇 핵심 결과 카드")
-
-                c_avg, c_max, c_min = st.columns(3)
-
-                avg_fw = float(fw.mean())
-                c_avg.metric("📊 평균 생중량", f"{avg_fw:.2f}g")
+                cA, cB, cC = st.columns(3)
+                cA.metric("📊 평균 생중량", f"{avg_fw:.2f}g")
 
                 if len(fw) > 0:
                     max_idx = fw.idxmax()
                     min_idx = fw.idxmin()
-                    plant_id_col = growth_df["개체번호"]
-
-                    max_id = plant_id_col.loc[max_idx] if max_idx in plant_id_col.index else "?"
-                    min_id = plant_id_col.loc[min_idx] if min_idx in plant_id_col.index else "?"
-
-                    # 개체번호가 float로 표시되는 것 방지 (원래 타입 그대로)
-                    if isinstance(max_id, float) and max_id == int(max_id):
-                        max_id_str = str(int(max_id))
-                    else:
-                        max_id_str = str(max_id)
-
-                    if isinstance(min_id, float) and min_id == int(min_id):
-                        min_id_str = str(int(min_id))
-                    else:
-                        min_id_str = str(min_id)
-
-                    c_max.metric(
-                        "🏆 최대 생중량 개체",
-                        f"{max_id_str}번: {fw.max():.2f}g",
-                    )
-                    c_min.metric(
-                        "📉 최소 생중량 개체",
-                        f"{min_id_str}번: {fw.min():.2f}g",
-                    )
+                    pid = growth_df["개체번호"]
+                    max_id = pid.loc[max_idx] if max_idx in pid.index else "?"
+                    min_id = pid.loc[min_idx] if min_idx in pid.index else "?"
+                    max_str = str(int(max_id)) if (isinstance(max_id, float) and max_id == int(max_id)) else str(max_id)
+                    min_str = str(int(min_id)) if (isinstance(min_id, float) and min_id == int(min_id)) else str(min_id)
+                    cB.metric("🏆 최대 생중량 개체", f"{max_str}번: {fw.max():.2f}g")
+                    cC.metric("📉 최소 생중량 개체", f"{min_str}번: {fw.min():.2f}g")
                 else:
-                    c_max.metric("🏆 최대 생중량 개체", "데이터 없음")
-                    c_min.metric("📉 최소 생중량 개체", "데이터 없음")
+                    cB.metric("🏆 최대 생중량 개체", "데이터 없음")
+                    cC.metric("📉 최소 생중량 개체", "데이터 없음")
 
-                # ── 개체별 생육 비교 (막대 그래프) ──
-                st.subheader("📊 개체별 생육 비교 (막대 그래프)")
-
-                growth_numeric_cols = [
-                    c
-                    for c in ["잎 수", "지상부 길이", "지하부 길이", "생중량"]
-                    if c in growth_df.columns and pd.api.types.is_numeric_dtype(
-                        growth_df[c]
-                    )
-                ]
-
-                if not growth_numeric_cols:
-                    st.info("측정 항목(잎 수, 지상부 길이 등) 숫자 열이 없습니다.")
-                else:
-                    # 선택한 항목이 있으면 그것만, 없으면 기본 4개
-                    plot_cols = [
-                        c for c in selected_items if c in growth_df.columns
-                    ]
-                    if not plot_cols:
-                        plot_cols = growth_numeric_cols[:4]
-
-                    n_plots = len(plot_cols)
-                    if n_plots == 0:
-                        st.info("표시할 측정 항목이 없습니다.")
-                    else:
-                        fig_bar = make_subplots(
-                            rows=n_plots,
-                            cols=1,
-                            subplot_titles=plot_cols,
-                            vertical_spacing=0.12,
-                        )
-
-                        for i, col in enumerate(plot_cols):
-                            vals = growth_df[col].dropna()
-                            if len(vals) == 0:
-                                continue
-                            # 개체번호 유지 (float 방지)
-                            ids = growth_df.loc[vals.index, "개체번호"]
-                            id_list = []
-                            for v in ids:
-                                if isinstance(v, float) and v == int(v):
-                                    id_list.append(int(v))
-                                else:
-                                    id_list.append(v)
-
-                            is_fw = col == "생중량"
-                            color = "gold" if is_fw else "steelblue"
-
-                            fig_bar.add_trace(
-                                go.Bar(
-                                    x=id_list,
-                                    y=vals.values,
-                                    name=col,
-                                    marker_color=color,
-                                    showlegend=False,
-                                ),
-                                row=i + 1,
-                                col=1,
-                            )
-
-                        fig_bar.update_layout(
-                            height=200 * n_plots + 50,
-                            font=dict(
-                                family="Malgun Gothic, Apple SD Gothic Neo, sans-serif"
-                            ),
-                            margin=dict(l=40, r=20, t=60, b=40),
-                        )
-                        for i in range(n_plots):
-                            fig_bar.update_yaxes(title_text=plot_cols[i], row=i + 1, col=1)
-
-                        st.plotly_chart(fig_bar, width="stretch")
-
-                # ── 생중량 분포 (박스플롯) ──
-                if has_fresh and len(fw) > 0:
-                    st.subheader("📦 생중량 분포 (박스플롯)")
-                    fig_box = go.Figure()
-                    fig_box.add_trace(
-                        go.Box(
-                            y=fw.values,
-                            name="생중량",
-                            fillcolor="lightgreen",
-                            boxpoints="outliers",
-                            marker=dict(color="darkgreen", size=6),
-                            line=dict(color="darkgreen"),
-                            showlegend=False,
-                        )
-                    )
-                    fig_box.update_layout(
-                        title="생중량 분포 (박스플롯) — 상자: 중간 50%, 선: 중앙값",
-                        yaxis_title="생중량 (g)",
-                        height=350,
-                        font=dict(
-                            family="Malgun Gothic, Apple SD Gothic Neo, sans-serif"
-                        ),
-                    )
-                    st.plotly_chart(fig_box, width="stretch")
-
-                    # 통계 설명
-                    std_fw = float(fw.std())
-                    cv_fw = float(std_fw / avg_fw) if avg_fw != 0 else 0
-                    st.caption(
-                        f"""
-**분포 통계**
+                st.caption(
+                    f"""
+**분포 요약**
 - 개수: {len(fw)}개체
 - 평균: {avg_fw:.2f}g
 - 표준편차: {std_fw:.2f}g (값이 평균에서 얼마나 흩어져 있는지)
-- 변동계수(CV): {cv_fw:.2f} (표준편차 ÷ 평균, 단위 없이 상대적 산포 비교용)
-- 최소값: {fw.min():.2f}g  |  최대값: {fw.max():.2f}g
+- 변동계수(CV): {cv_fw:.2f} (표준편차 ÷ 평균, 상대적 산포)
+- 최소: {fw.min():.2f}g  |  최대: {fw.max():.2f}g
+"""
+                )
+
+                # ── 개체별 막대 그래프 ──
+                st.subheader("📊 개체별 생육 비교 (막대 그래프)")
+                plot_cols = [
+                    c for c in ["잎 수", "지상부 길이", "지하부 길이", "생중량"]
+                    if c in growth_df.columns and pd.api.types.is_numeric_dtype(growth_df[c])
+                ]
+                if not plot_cols:
+                    st.info("측정 항목 숫자 열이 없습니다.")
+                else:
+                    sel = [c for c in selected_items if c in growth_df.columns]
+                    if not sel:
+                        sel = plot_cols[:4]
+                    n_plots = len(sel)
+                    if n_plots == 0:
+                        st.info("표시할 항목이 없습니다.")
+                    else:
+                        fig, axes = plt.subplots(n_plots, 1, figsize=(12, 3.2 * n_plots))
+                        if n_plots == 1:
+                            axes = np.array([axes])
+                        fig.suptitle(f"{school_name} 개체별 생육 측정값", fontsize=13)
+
+                        for i, col in enumerate(sel):
+                            ax = axes[i]
+                            vals = growth_df[col].dropna()
+                            if len(vals) == 0:
+                                ax.text(0.5, 0.5, f"{col} 데이터 없음", ha="center",
+                                        va="center", transform=ax.transAxes)
+                                ax.set_title(col)
+                                continue
+                            ids = growth_df.loc[vals.index, "개체번호"]
+                            id_list = [
+                                int(v) if (isinstance(v, float) and v == int(v)) else v
+                                for v in ids
+                            ]
+                            is_fw = col == "생중량"
+                            color = "gold" if is_fw else "steelblue"
+                            ax.bar(id_list, vals.values, color=color, edgecolor="white",
+                                   linewidth=0.5)
+                            ax.axhline(vals.mean(), color="gray", linestyle="--", linewidth=1,
+                                       label=f"평균 {vals.mean():.2f}")
+                            ax.set_title(col, fontsize=11)
+                            ax.set_ylabel(col)
+                            ax.legend(loc="upper right", fontsize=9)
+                            ax.grid(True, axis="y", alpha=0.3)
+                            ax.set_xlabel("개체번호" if i == n_plots - 1 else "")
+
+                        plt.tight_layout()
+                        st.pyplot(fig, use_container_width=True)
+                        plt.close(fig)
+
+                # ── 박스플롯 ──
+                if has_fresh and len(fw) > 0:
+                    st.subheader("📦 생중량 분포 (박스플롯)")
+                    fig2, ax2 = plt.subplots(figsize=(8, 5))
+                    bp = ax2.boxplot(fw.values, vert=True, patch_artist=True,
+                                     boxprops=dict(facecolor="lightgreen", color="darkgreen"),
+                                     medianprops=dict(color="darkgreen", linewidth=2),
+                                     whiskerprops=dict(color="darkgreen"),
+                                     capprops=dict(color="darkgreen"),
+                                     flierprops=dict(marker="o", markerfacecolor="red",
+                                                     markeredgecolor="darkred", markersize=7))
+                    ax2.set_title("생중량 분포 — 상자: 중간 50%(Q1~Q3), 선: 중앙값, ◆: 아웃라이어")
+                    ax2.set_ylabel("생중량 (g)")
+                    ax2.grid(True, axis="y", alpha=0.3)
+                    ax2.set_xlabel("")
+
+                    q1 = float(fw.quantile(0.25))
+                    q3 = float(fw.quantile(0.75))
+                    ax2.axhline(q1, color="orange", linestyle=":", linewidth=1,
+                                label=f"Q1 (하위 25%) = {q1:.2f}g")
+                    ax2.axhline(q3, color="purple", linestyle=":", linewidth=1,
+                                label=f"Q3 (상위 25%) = {q3:.2f}g")
+                    ax2.axhline(avg_fw, color="gray", linestyle="--", linewidth=1,
+                                label=f"평균 = {avg_fw:.2f}g")
+                    ax2.legend(fontsize=9)
+                    plt.tight_layout()
+                    st.pyplot(fig2, use_container_width=True)
+                    plt.close(fig2)
+
+                    st.caption(f"""
+**박스플롯 읽기**
+- 상자(위아래 경계): Q1({q1:.2f}g) ~ Q3({q3:.2f}g) — 전체 개체 중 가운데 50%가 이 범위
+- 상자 안 굵은 선: 중앙값 (데이터 정가운데 값)
+- 수염(whisker): 정상 범위 끝까지
+- 빨간 ◆: 아웃라이어(극단값) — 56번처럼 매우 큰 개체
+- **변동계수 CV = {cv_fw:.2f}**: 평균 대비 산포가 약 {cv_fw*100:.0f}% — 개체 간 생육 차이가 상당히 큼
 """
                     )
 
-                # ── 상관관계 분석 ──
+                # ── 상관관계: 산점도 + 추세선 ──
                 st.subheader("🔗 상관관계 분석 (산점도 + 추세선)")
 
                 corr_pairs = [
-                    ("잎 수", "생중량"),
-                    ("지상부 길이", "생중량"),
+                    (a, b)
+                    for a, b in [("잎 수", "생중량"), ("지상부 길이", "생중량")]
+                    if a in growth_df.columns and b in growth_df.columns
                 ]
-                corr_pairs = [
-                    (a, b) for a, b in corr_pairs if a in growth_df.columns and b in growth_df.columns
-                ]
-
                 if not corr_pairs:
-                    st.info("상관관계 분석할 측정 항목 쌍이 없습니다.")
+                    st.info("상관관계 분석할 항목 쌍이 없습니다.")
                 else:
                     for x_col, y_col in corr_pairs:
-                        fig_s = go.Figure()
+                        fig3, ax3 = plt.subplots(figsize=(7, 5))
+                        xv = growth_df[x_col].dropna()
+                        yv = growth_df.loc[xv.index, y_col].dropna()
+                        idx = xv.index.intersection(yv.index)
+                        xs = growth_df.loc[idx, x_col]
+                        ys = growth_df.loc[idx, y_col]
 
-                        x_raw = growth_df[x_col].dropna()
-                        y_raw = growth_df.loc[x_raw.index, y_col].dropna()
-                        common_idx = x_raw.index.intersection(y_raw.index)
-                        x_vals = growth_df.loc[common_idx, x_col]
-                        y_vals = growth_df.loc[common_idx, y_col]
+                        if len(xs) > 0:
+                            ax3.scatter(xs, ys, s=40, color="steelblue", alpha=0.7,
+                                        edgecolors="white", linewidth=0.5)
+                            add_trendline(ax3, xs, ys, color="red", ls="--", lw=2)
 
-                        if len(x_vals) > 0:
-                            fig_s.add_trace(
-                                go.Scatter(
-                                    x=x_vals,
-                                    y=y_vals,
-                                    mode="markers",
-                                    name=f"{x_col} vs {y_col}",
-                                    marker=dict(size=8, color="steelblue", opacity=0.7),
-                                    showlegend=False,
-                                )
-                            )
-                            add_trendline(fig_s, x_vals, y_vals, color="red", dash="dash")
+                            r_val = safe_corr(growth_df, x_col, y_col)
+                            r_text = f"r = {r_val:.3f}" if r_val is not None else "r = 계산 불가"
+                            ax3.set_title(f"{x_col} vs {y_col}  |  {r_text}")
+                            ax3.set_xlabel(x_col)
+                            ax3.set_ylabel(y_col)
+                            ax3.grid(True, alpha=0.3)
 
-                        r_val = safe_corr(growth_df, x_col, y_col)
-                        r_text = f"r = {r_val:.3f}" if r_val is not None else "r = 계산 불가"
+                            if r_val is not None:
+                                if abs(r_val) >= 0.7:
+                                    strength = "강한"
+                                elif abs(r_val) >= 0.4:
+                                    strength = "중간"
+                                else:
+                                    strength = "약한"
+                                direction = "▲ 함께 증가" if r_val > 0 else "▼ 반대 방향"
+                                ax3.text(0.05, 0.95,
+                                         f"r = {r_val:.3f} → {strength} {direction}\n"
+                                         f"※ 상관계수 ≠ 인과",
+                                         transform=ax3.transAxes, fontsize=10,
+                                         verticalalignment="top",
+                                         bbox=dict(boxstyle="round", facecolor="wheat",
+                                                   alpha=0.5))
 
-                        fig_s.update_layout(
-                            title=f"{x_col} vs {y_col}  |  {r_text}",
-                            xaxis_title=x_col,
-                            yaxis_title=y_col,
-                            height=380,
-                            font=dict(
-                                family="Malgun Gothic, Apple SD Gothic Neo, sans-serif"
-                            ),
-                        )
-                        st.plotly_chart(fig_s, width="stretch")
+                            plt.tight_layout()
+                            st.pyplot(fig3, use_container_width=True)
+                            plt.close(fig3)
 
-                        # 상관계수 해석
-                        if r_val is not None:
-                            if abs(r_val) >= 0.7:
-                                strength = "강한"
-                            elif abs(r_val) >= 0.4:
-                                strength = "중간"
-                            else:
-                                strength = "약한"
-
-                            direction = "▲ 함께 증가" if r_val > 0 else "▼ 반대 방향"
-
-                            st.caption(
-                                f"""
+                            if r_val is not None:
+                                st.caption(
+                                    f"""
 **{x_col} vs {y_col} 상관 해석**
 - 상관계수 r = {r_val:.3f} → **{strength} {direction}** 관계
 - r 범위: **-1 ≤ r ≤ 1**
   - 1에 가까움: 함께 증가 (예: 잎 수↑ → 생중량↑)
   - 0에 가까움: 관계 거의 없음
   - -1에 가까움: 한쪽 증가 시 다른 쪽 감소
-- **상관 ≠ 인과**예요. 함께 움직인다고 해서 한쪽이 원인이라고 단정할 수는 없습니다.
+- **상관계수 ≠ 인과**: 함께 움직인다고 해서 한쪽이 원인이라고 단정할 수 없습니다.
 """
-                            )
+                                )
 
                 # ── 상위 25% vs 하위 25% 비교 ──
                 if has_fresh and len(fw) >= 4:
@@ -749,46 +661,55 @@ with tab3:
 
                     q75 = float(fw.quantile(0.75))
                     q25 = float(fw.quantile(0.25))
-
                     top_df = growth_df.loc[fw[fw >= q75].index].copy()
                     bot_df = growth_df.loc[fw[fw <= q25].index].copy()
 
                     comp_cols = [
-                        c
-                        for c in ["잎 수", "지상부 길이", "지하부 길이", "생중량"]
-                        if c in growth_df.columns
-                        and pd.api.types.is_numeric_dtype(growth_df[c])
+                        c for c in ["잎 수", "지상부 길이", "지하부 길이", "생중량"]
+                        if c in growth_df.columns and pd.api.types.is_numeric_dtype(growth_df[c])
                     ]
-
                     if comp_cols:
                         comp_rows = []
                         for col in comp_cols:
-                            top_vals = top_df[col].dropna()
-                            bot_vals = bot_df[col].dropna()
-                            comp_rows.append(
-                                {
-                                    "측정 항목": col,
-                                    "상위 25% 평균": f"{top_vals.mean():.2f}"
-                                    if len(top_vals)
-                                    else "—",
-                                    "하위 25% 평균": f"{bot_vals.mean():.2f}"
-                                    if len(bot_vals)
-                                    else "—",
-                                    "상위 개체 수": f"{len(top_df)}개체",
-                                    "하위 개체 수": f"{len(bot_df)}개체",
-                                }
-                            )
-                        st.dataframe(
-                            pd.DataFrame(comp_rows), use_container_width=True
-                        )
+                            tv = top_df[col].dropna()
+                            bv = bot_df[col].dropna()
+                            comp_rows.append({
+                                "측정 항목": col,
+                                "상위 25% 평균": f"{tv.mean():.2f}" if len(tv) else "—",
+                                "하위 25% 평균": f"{bv.mean():.2f}" if len(bv) else "—",
+                                "상위 개체 수": f"{len(top_df)}개체",
+                                "하위 개체 수": f"{len(bot_df)}개체",
+                            })
+                        st.dataframe(pd.DataFrame(comp_rows), use_container_width=True)
+
+                        # 막대 비교 차트
+                        fig4, ax4 = plt.subplots(figsize=(8, 4))
+                        labels = comp_cols
+                        top_means = [float(top_df[c].dropna().mean()) if len(top_df[c].dropna()) else 0 for c in comp_cols]
+                        bot_means = [float(bot_df[c].dropna().mean()) if len(bot_df[c].dropna()) else 0 for c in comp_cols]
+
+                        x_pos = np.arange(len(labels))
+                        w = 0.35
+                        ax4.bar(x_pos - w/2, top_means, width=w, color="gold", edgecolor="white",
+                                label=f"상위 25% (Q3={q75:.2f}g 이상, n={len(top_df)})")
+                        ax4.bar(x_pos + w/2, bot_means, width=w, color="lightcoral", edgecolor="white",
+                                label=f"하위 25% (Q1={q25:.2f}g 이하, n={len(bot_df)})")
+                        ax4.set_xticks(x_pos)
+                        ax4.set_xticklabels(labels, fontsize=10)
+                        ax4.set_ylabel("평균값")
+                        ax4.set_title(f"상위 25% vs 하위 25% 평균 비교")
+                        ax4.legend(fontsize=9)
+                        ax4.grid(True, axis="y", alpha=0.3)
+                        plt.tight_layout()
+                        st.pyplot(fig4, use_container_width=True)
+                        plt.close(fig4)
                     else:
                         st.info("비교할 측정 항목이 없습니다.")
 
                 # ── 원본 테이블 + 다운로드 ──
-                with st.expander("📄 생육 데이터 원본 테이블 보기"):
-                    st.dataframe(growth_df, width="stretch", height=300)
+                with st.expander("📄 생육 데이터 원본 테이블 + 다운로드"):
+                    st.dataframe(growth_df, use_container_width=True, height=280)
                     make_csv_download(growth_df, f"{school_name}_생육결과데이터")
 
     except Exception as e:
         st.warning(f"⚠️ 이 부분은 데이터 형식 때문에 표시하지 못했어요: {e}")
-
